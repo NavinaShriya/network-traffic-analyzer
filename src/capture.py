@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP
 
 
@@ -42,8 +44,15 @@ stats = {
 # SERVICE IDENTIFICATION
 # ==========================================
 
-def get_service(port):
-    return SERVICE_MAP.get(port, "Unknown")
+def get_service(source_port, destination_port):
+
+    if destination_port in SERVICE_MAP:
+        return SERVICE_MAP[destination_port]
+
+    if source_port in SERVICE_MAP:
+        return SERVICE_MAP[source_port]
+
+    return "Unknown"
 
 
 # ==========================================
@@ -54,7 +63,14 @@ def show_packet(packet):
 
     stats["total"] += 1
 
-    print("\n" + "=" * 60)
+    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+    packet_size = len(packet)
+
+    print("\n" + "=" * 70)
+
+    print(f"Timestamp       : {timestamp}")
+    print(f"Packet Size     : {packet_size} bytes")
 
     # --------------------------------------
     # IP PACKETS
@@ -83,7 +99,10 @@ def show_packet(packet):
             print(f"Source Port     : {source_port}")
             print(f"Destination Port: {destination_port}")
 
-            service = get_service(destination_port)
+            service = get_service(
+                source_port,
+                destination_port
+            )
 
             print(f"Service         : {service}")
 
@@ -102,7 +121,10 @@ def show_packet(packet):
             print(f"Source Port     : {source_port}")
             print(f"Destination Port: {destination_port}")
 
-            service = get_service(destination_port)
+            service = get_service(
+                source_port,
+                destination_port
+            )
 
             print(f"Service         : {service}")
 
@@ -126,7 +148,6 @@ def show_packet(packet):
 
             print("Protocol        : Other")
 
-
     # --------------------------------------
     # ARP PACKETS
     # --------------------------------------
@@ -147,9 +168,9 @@ def show_packet(packet):
 def show_statistics():
 
     print("\n")
-    print("=" * 60)
-    print("           NETWORK TRAFFIC STATISTICS")
-    print("=" * 60)
+    print("=" * 70)
+    print("                 NETWORK TRAFFIC STATISTICS")
+    print("=" * 70)
 
     print(f"Total Packets   : {stats['total']}")
     print(f"TCP Packets     : {stats['TCP']}")
@@ -158,16 +179,16 @@ def show_statistics():
     print(f"ARP Packets     : {stats['ARP']}")
     print(f"Other Packets   : {stats['Other']}")
 
-    print("=" * 60)
+    print("=" * 70)
 
 
 # ==========================================
 # PROGRAM START
 # ==========================================
 
-print("=" * 60)
-print("          NETWORK TRAFFIC ANALYZER")
-print("=" * 60)
+print("=" * 70)
+print("                 NETWORK TRAFFIC ANALYZER")
+print("=" * 70)
 
 print("Starting packet capture...")
 print("Press CTRL+C to stop.")
@@ -176,7 +197,6 @@ print("Press CTRL+C to stop.")
 try:
 
     sniff(prn=show_packet)
-
 
 finally:
 
