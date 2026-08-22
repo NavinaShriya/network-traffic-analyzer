@@ -14,6 +14,7 @@ from scapy.all import (
 )
 
 from src.dns_detector import analyze_dns_query
+from src.security_logger import log_security_alert
 
 
 # ==========================================
@@ -22,11 +23,9 @@ from src.dns_detector import analyze_dns_query
 
 PCAP_FILE = "captures/traffic.pcap"
 
-# Port scan detection
 PORT_SCAN_THRESHOLD = 10
 PORT_SCAN_WINDOW = 10
 
-# SYN flood detection
 SYN_FLOOD_THRESHOLD = 50
 SYN_FLOOD_WINDOW = 5
 SYN_FLOOD_MAX_PORTS = 3
@@ -115,11 +114,9 @@ def detect_port_scan(packet):
 
     tcp_flags = int(packet[TCP].flags)
 
-    # SYN must be set
     if not (tcp_flags & 0x02):
         return
 
-    # ACK must NOT be set
     if tcp_flags & 0x10:
         return
 
@@ -140,7 +137,6 @@ def detect_port_scan(packet):
         )
     )
 
-    # Remove old entries
     recent_packets = [
         entry
         for entry in port_scan_tracker[source_ip]
@@ -149,7 +145,6 @@ def detect_port_scan(packet):
 
     port_scan_tracker[source_ip] = recent_packets
 
-    # Group ports by destination
     targets = {}
 
     for packet_time, dst_ip, dst_port in recent_packets:
@@ -159,7 +154,6 @@ def detect_port_scan(packet):
 
         targets[dst_ip].add(dst_port)
 
-    # Detect scan
     for target_ip, unique_ports in targets.items():
 
         if len(unique_ports) >= PORT_SCAN_THRESHOLD:
@@ -175,6 +169,21 @@ def detect_port_scan(packet):
             port_scan_alerted.add(alert_key)
 
             stats["Alerts"] += 1
+
+            details = {
+                "ports_scanned": len(unique_ports),
+                "destination_ports": sorted(unique_ports),
+                "detection_window": PORT_SCAN_WINDOW,
+                "threshold": PORT_SCAN_THRESHOLD
+            }
+
+            log_security_alert(
+                alert_type="TCP_PORT_SCAN",
+                source_ip=source_ip,
+                target_ip=target_ip,
+                severity="HIGH",
+                details=details
+            )
 
             print("\n")
             print("!" * 70)
@@ -273,7 +282,6 @@ def detect_syn_flood(packet):
         )
     )
 
-    # Remove old SYNs
     syn_tracker[connection_key] = [
         entry
         for entry in syn_tracker[connection_key]
@@ -351,6 +359,24 @@ def detect_syn_flood(packet):
 
         stats["Alerts"] += 1
 
+        details = {
+            "syn_attempts": syn_count,
+            "syn_ack_responses": syn_ack_count,
+            "response_ratio": response_ratio,
+            "unique_ports": sorted(unique_ports),
+            "detection_window": SYN_FLOOD_WINDOW,
+            "syn_threshold": SYN_FLOOD_THRESHOLD,
+            "response_limit": SYN_ACK_RESPONSE_RATIO
+        }
+
+        log_security_alert(
+            alert_type="TCP_SYN_FLOOD",
+            source_ip=source_ip,
+            target_ip=destination_ip,
+            severity="HIGH",
+            details=details
+        )
+
         print("\n")
         print("!" * 70)
         print("              🚨 SECURITY ALERT 🚨")
@@ -385,7 +411,7 @@ def detect_syn_flood(packet):
 
 
 # ==========================================
-# DNS ANALYSIS + ANOMALY DETECTION
+# DNS ANALYSIS
 # ==========================================
 
 def analyze_dns(packet):
@@ -395,7 +421,6 @@ def analyze_dns(packet):
 
     dns_layer = packet[DNS]
 
-    # Only process DNS queries
     if dns_layer.qr != 0:
         return
 
@@ -416,7 +441,6 @@ def analyze_dns(packet):
         f"{query}"
     )
 
-    # Run DNS anomaly detector
     alerts = analyze_dns_query(
         source_ip=source_ip,
         domain=query
@@ -452,10 +476,6 @@ def show_packet(packet):
         f"{packet_size} bytes"
     )
 
-    # --------------------------------------
-    # IP
-    # --------------------------------------
-
     if IP in packet:
 
         source = packet[IP].src
@@ -470,10 +490,6 @@ def show_packet(packet):
             f"Destination IP   : "
             f"{destination}"
         )
-
-        # ----------------------------------
-        # TCP
-        # ----------------------------------
 
         if TCP in packet:
 
@@ -507,10 +523,6 @@ def show_packet(packet):
             detect_port_scan(packet)
             detect_syn_flood(packet)
 
-        # ----------------------------------
-        # UDP
-        # ----------------------------------
-
         elif UDP in packet:
 
             stats["UDP"] += 1
@@ -543,10 +555,6 @@ def show_packet(packet):
             if DNS in packet:
                 analyze_dns(packet)
 
-        # ----------------------------------
-        # ICMP
-        # ----------------------------------
-
         elif ICMP in packet:
 
             stats["ICMP"] += 1
@@ -556,10 +564,6 @@ def show_packet(packet):
                 "ICMP"
             )
 
-        # ----------------------------------
-        # OTHER IP
-        # ----------------------------------
-
         else:
 
             stats["Other"] += 1
@@ -568,10 +572,6 @@ def show_packet(packet):
                 "Protocol         : "
                 "Other"
             )
-
-    # --------------------------------------
-    # ARP
-    # --------------------------------------
 
     elif ARP in packet:
 
@@ -601,10 +601,12 @@ def show_statistics():
 
     print("\n")
     print("=" * 70)
+
     print(
         "                 "
         "NETWORK TRAFFIC STATISTICS"
     )
+
     print("=" * 70)
 
     print(
