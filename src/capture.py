@@ -1,6 +1,23 @@
 from datetime import datetime
 
-from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP
+from scapy.all import (
+    sniff,
+    wrpcap,
+    IP,
+    TCP,
+    UDP,
+    ICMP,
+    ARP,
+    DNS,
+    DNSQR
+)
+
+
+# ==========================================
+# CONFIGURATION
+# ==========================================
+
+PCAP_FILE = "captures/traffic.pcap"
 
 
 # ==========================================
@@ -36,7 +53,8 @@ stats = {
     "UDP": 0,
     "ICMP": 0,
     "ARP": 0,
-    "Other": 0
+    "Other": 0,
+    "DNS": 0
 }
 
 
@@ -56,6 +74,34 @@ def get_service(source_port, destination_port):
 
 
 # ==========================================
+# DNS ANALYSIS
+# ==========================================
+
+def analyze_dns(packet):
+
+    if DNS in packet:
+
+        stats["DNS"] += 1
+
+        dns_layer = packet[DNS]
+
+        # DNS query
+        if dns_layer.qr == 0 and DNSQR in packet:
+
+            query = packet[DNSQR].qname
+
+            if isinstance(query, bytes):
+                query = query.decode(errors="ignore")
+
+            print(f"DNS Query       : {query}")
+
+        # DNS response
+        elif dns_layer.qr == 1:
+
+            print("DNS Message     : Response")
+
+
+# ==========================================
 # PACKET ANALYSIS
 # ==========================================
 
@@ -72,6 +118,7 @@ def show_packet(packet):
     print(f"Timestamp       : {timestamp}")
     print(f"Packet Size     : {packet_size} bytes")
 
+
     # --------------------------------------
     # IP PACKETS
     # --------------------------------------
@@ -83,6 +130,7 @@ def show_packet(packet):
 
         print(f"Source IP       : {source}")
         print(f"Destination IP  : {destination}")
+
 
         # ----------------------------------
         # TCP
@@ -106,6 +154,7 @@ def show_packet(packet):
 
             print(f"Service         : {service}")
 
+
         # ----------------------------------
         # UDP
         # ----------------------------------
@@ -128,6 +177,12 @@ def show_packet(packet):
 
             print(f"Service         : {service}")
 
+            # DNS analysis
+            if DNS in packet:
+
+                analyze_dns(packet)
+
+
         # ----------------------------------
         # ICMP
         # ----------------------------------
@@ -138,6 +193,7 @@ def show_packet(packet):
 
             print("Protocol        : ICMP")
 
+
         # ----------------------------------
         # OTHER IP PROTOCOLS
         # ----------------------------------
@@ -147,6 +203,7 @@ def show_packet(packet):
             stats["Other"] += 1
 
             print("Protocol        : Other")
+
 
     # --------------------------------------
     # ARP PACKETS
@@ -178,6 +235,7 @@ def show_statistics():
     print(f"ICMP Packets    : {stats['ICMP']}")
     print(f"ARP Packets     : {stats['ARP']}")
     print(f"Other Packets   : {stats['Other']}")
+    print(f"DNS Messages    : {stats['DNS']}")
 
     print("=" * 70)
 
@@ -190,15 +248,30 @@ print("=" * 70)
 print("                 NETWORK TRAFFIC ANALYZER")
 print("=" * 70)
 
+print(f"Saving packets to: {PCAP_FILE}")
+
 print("Starting packet capture...")
 print("Press CTRL+C to stop.")
 
 
+# ==========================================
+# PACKET CAPTURE
+# ==========================================
+
+captured_packets = []
+
 try:
 
-    sniff(prn=show_packet)
+    captured_packets = sniff(prn=show_packet)
 
 finally:
+
+    # Save packets to PCAP
+    if captured_packets:
+
+        wrpcap(PCAP_FILE, captured_packets)
+
+        print(f"\nPCAP saved to: {PCAP_FILE}")
 
     show_statistics()
 
