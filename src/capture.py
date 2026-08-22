@@ -20,9 +20,14 @@ from scapy.all import (
 
 PCAP_FILE = "captures/traffic.pcap"
 
-# Port scan detection settings
+# Port scan detection
 PORT_SCAN_THRESHOLD = 10
 PORT_SCAN_WINDOW = 10
+
+# SYN flood detection
+SYN_FLOOD_THRESHOLD = 50
+SYN_FLOOD_WINDOW = 5
+SYN_FLOOD_MAX_PORTS = 3
 
 
 # ==========================================
@@ -69,8 +74,15 @@ stats = {
 # ==========================================
 
 port_scan_tracker = {}
-
 port_scan_alerted = set()
+
+
+# ==========================================
+# SYN FLOOD TRACKING
+# ==========================================
+
+syn_tracker = {}
+syn_flood_alerted = set()
 
 
 # ==========================================
@@ -97,13 +109,13 @@ def detect_port_scan(packet):
     if IP not in packet or TCP not in packet:
         return
 
-    tcp_flags = packet[TCP].flags
+    tcp_flags = int(packet[TCP].flags)
 
-    # Detect initial TCP SYN packets.
-    # SYN = 1 and ACK = 0
+    # SYN must be set
     if not (tcp_flags & 0x02):
         return
 
+    # ACK must NOT be set
     if tcp_flags & 0x10:
         return
 
@@ -113,7 +125,6 @@ def detect_port_scan(packet):
 
     current_time = time.time()
 
-    # Create tracking record for this source
     if source_ip not in port_scan_tracker:
         port_scan_tracker[source_ip] = []
 
@@ -121,7 +132,6 @@ def detect_port_scan(packet):
         (current_time, destination_ip, destination_port)
     )
 
-    # Remove entries older than our detection window
     recent_packets = []
 
     for packet_time, dst_ip, dst_port in port_scan_tracker[source_ip]:
@@ -134,14 +144,12 @@ def detect_port_scan(packet):
 
     port_scan_tracker[source_ip] = recent_packets
 
-    # Count unique destination ports
     unique_ports = set()
 
     for packet_time, dst_ip, dst_port in recent_packets:
 
         unique_ports.add(dst_port)
 
-    # Trigger alert
     if len(unique_ports) >= PORT_SCAN_THRESHOLD:
 
         alert_key = (
@@ -162,21 +170,163 @@ def detect_port_scan(packet):
 
             print("Possible TCP Port Scan Detected")
 
-            print(f"Source IP       : {source_ip}")
-            print(f"Target IP       : {destination_ip}")
-            print(f"Ports Scanned   : {len(unique_ports)}")
+            print(f"Source IP        : {source_ip}")
+            print(f"Target IP        : {destination_ip}")
+            print(f"Ports Scanned    : {len(unique_ports)}")
 
-            sorted_ports = sorted(unique_ports)
+            print(
+                f"Destination Ports: "
+                f"{sorted(unique_ports)}"
+            )
 
-            print(f"Destination Ports: {sorted_ports}")
+            print(
+                f"Detection Window : "
+                f"{PORT_SCAN_WINDOW} seconds"
+            )
 
-            print(f"Detection Window: {PORT_SCAN_WINDOW} seconds")
-            print(f"Threshold       : {PORT_SCAN_THRESHOLD} ports")
+            print(
+                f"Threshold        : "
+                f"{PORT_SCAN_THRESHOLD} ports"
+            )
 
-            print("Severity        : HIGH")
+            print("Severity         : HIGH")
 
             print("!" * 70)
+            print()
+
+
+# ==========================================
+# SYN FLOOD DETECTION
+# ==========================================
+
+def detect_syn_flood(packet):
+
+    if IP not in packet or TCP not in packet:
+        return
+
+    tcp_flags = int(packet[TCP].flags)
+
+    source_ip = packet[IP].src
+    destination_ip = packet[IP].dst
+
+    source_port = packet[TCP].sport
+    destination_port = packet[TCP].dport
+
+    current_time = time.time()
+
+    # --------------------------------------
+    # SYN PACKET
+    # --------------------------------------
+
+    is_syn = bool(tcp_flags & 0x02)
+    is_ack = bool(tcp_flags & 0x10)
+
+    # Pure SYN: SYN=1, ACK=0
+    if is_syn and not is_ack:
+
+        connection_key = (
+            source_ip,
+            destination_ip
+        )
+
+        if connection_key not in syn_tracker:
+
+            syn_tracker[connection_key] = []
+
+        syn_tracker[connection_key].append(
+            (
+                current_time,
+                destination_port
+            )
+        )
+
+    # --------------------------------------
+    # REMOVE OLD SYN ENTRIES
+    # --------------------------------------
+
+    connection_key = (
+        source_ip,
+        destination_ip
+    )
+
+    if connection_key in syn_tracker:
+
+        recent_syns = []
+
+        for packet_time, dst_port in syn_tracker[connection_key]:
+
+            if current_time - packet_time <= SYN_FLOOD_WINDOW:
+
+                recent_syns.append(
+                    (
+                        packet_time,
+                        dst_port
+                    )
+                )
+
+        syn_tracker[connection_key] = recent_syns
+
+    # --------------------------------------
+    # CHECK FOR POSSIBLE SYN FLOOD
+    # --------------------------------------
+
+    if connection_key not in syn_tracker:
+        return
+
+    recent_syns = syn_tracker[connection_key]
+
+    syn_count = len(recent_syns)
+
+    unique_ports = set()
+
+    for packet_time, dst_port in recent_syns:
+
+        unique_ports.add(dst_port)
+
+    # A flood-like pattern should generally
+    # concentrate on a small number of ports.
+
+    if (
+        syn_count >= SYN_FLOOD_THRESHOLD
+        and len(unique_ports) <= SYN_FLOOD_MAX_PORTS
+    ):
+
+        if connection_key not in syn_flood_alerted:
+
+            syn_flood_alerted.add(connection_key)
+
+            stats["Alerts"] += 1
+
             print("\n")
+            print("!" * 70)
+            print("              🚨 SECURITY ALERT 🚨")
+            print("!" * 70)
+
+            print("Possible TCP SYN Flood Detected")
+
+            print(f"Source IP        : {source_ip}")
+            print(f"Target IP        : {destination_ip}")
+            print(f"SYN Attempts     : {syn_count}")
+
+            print(
+                f"Unique Ports     : "
+                f"{sorted(unique_ports)}"
+            )
+
+            print(
+                f"Detection Window : "
+                f"{SYN_FLOOD_WINDOW} seconds"
+            )
+
+            print(
+                f"Threshold        : "
+                f"{SYN_FLOOD_THRESHOLD} SYNs"
+            )
+
+            print("Severity         : HIGH")
+
+            print("!" * 70)
+            print()
 
 
 # ==========================================
@@ -222,9 +372,8 @@ def show_packet(packet):
 
     print("\n" + "=" * 70)
 
-    print(f"Timestamp       : {timestamp}")
-    print(f"Packet Size     : {packet_size} bytes")
-
+    print(f"Timestamp        : {timestamp}")
+    print(f"Packet Size      : {packet_size} bytes")
 
     # --------------------------------------
     # IP PACKETS
@@ -235,9 +384,8 @@ def show_packet(packet):
         source = packet[IP].src
         destination = packet[IP].dst
 
-        print(f"Source IP       : {source}")
-        print(f"Destination IP  : {destination}")
-
+        print(f"Source IP        : {source}")
+        print(f"Destination IP   : {destination}")
 
         # ----------------------------------
         # TCP
@@ -250,20 +398,20 @@ def show_packet(packet):
             source_port = packet[TCP].sport
             destination_port = packet[TCP].dport
 
-            print("Protocol        : TCP")
-            print(f"Source Port     : {source_port}")
-            print(f"Destination Port: {destination_port}")
+            print("Protocol         : TCP")
+            print(f"Source Port      : {source_port}")
+            print(f"Destination Port : {destination_port}")
 
             service = get_service(
                 source_port,
                 destination_port
             )
 
-            print(f"Service         : {service}")
+            print(f"Service          : {service}")
 
-            # Check for port scan
+            # Security detection
             detect_port_scan(packet)
-
+            detect_syn_flood(packet)
 
         # ----------------------------------
         # UDP
@@ -276,22 +424,20 @@ def show_packet(packet):
             source_port = packet[UDP].sport
             destination_port = packet[UDP].dport
 
-            print("Protocol        : UDP")
-            print(f"Source Port     : {source_port}")
-            print(f"Destination Port: {destination_port}")
+            print("Protocol         : UDP")
+            print(f"Source Port      : {source_port}")
+            print(f"Destination Port : {destination_port}")
 
             service = get_service(
                 source_port,
                 destination_port
             )
 
-            print(f"Service         : {service}")
+            print(f"Service          : {service}")
 
-            # DNS analysis
             if DNS in packet:
 
                 analyze_dns(packet)
-
 
         # ----------------------------------
         # ICMP
@@ -301,31 +447,29 @@ def show_packet(packet):
 
             stats["ICMP"] += 1
 
-            print("Protocol        : ICMP")
-
+            print("Protocol         : ICMP")
 
         # ----------------------------------
-        # OTHER IP PROTOCOLS
+        # OTHER IP
         # ----------------------------------
 
         else:
 
             stats["Other"] += 1
 
-            print("Protocol        : Other")
-
+            print("Protocol         : Other")
 
     # --------------------------------------
-    # ARP PACKETS
+    # ARP
     # --------------------------------------
 
     elif ARP in packet:
 
         stats["ARP"] += 1
 
-        print("Protocol        : ARP")
-        print(f"Source IP       : {packet[ARP].psrc}")
-        print(f"Destination IP  : {packet[ARP].pdst}")
+        print("Protocol         : ARP")
+        print(f"Source IP        : {packet[ARP].psrc}")
+        print(f"Destination IP   : {packet[ARP].pdst}")
 
 
 # ==========================================
@@ -339,14 +483,14 @@ def show_statistics():
     print("                 NETWORK TRAFFIC STATISTICS")
     print("=" * 70)
 
-    print(f"Total Packets   : {stats['total']}")
-    print(f"TCP Packets     : {stats['TCP']}")
-    print(f"UDP Packets     : {stats['UDP']}")
-    print(f"ICMP Packets    : {stats['ICMP']}")
-    print(f"ARP Packets     : {stats['ARP']}")
-    print(f"Other Packets   : {stats['Other']}")
-    print(f"DNS Messages    : {stats['DNS']}")
-    print(f"Security Alerts : {stats['Alerts']}")
+    print(f"Total Packets    : {stats['total']}")
+    print(f"TCP Packets      : {stats['TCP']}")
+    print(f"UDP Packets      : {stats['UDP']}")
+    print(f"ICMP Packets     : {stats['ICMP']}")
+    print(f"ARP Packets      : {stats['ARP']}")
+    print(f"Other Packets    : {stats['Other']}")
+    print(f"DNS Messages     : {stats['DNS']}")
+    print(f"Security Alerts  : {stats['Alerts']}")
 
     print("=" * 70)
 
@@ -355,41 +499,60 @@ def show_statistics():
 # PROGRAM START
 # ==========================================
 
-print("=" * 70)
-print("                 NETWORK TRAFFIC ANALYZER")
-print("=" * 70)
+def main():
 
-print(f"Saving packets to: {PCAP_FILE}")
+    print("=" * 70)
+    print("                 NETWORK TRAFFIC ANALYZER")
+    print("=" * 70)
 
-print("\nPort Scan Detection:")
-print(f"  Threshold : {PORT_SCAN_THRESHOLD} unique ports")
-print(f"  Window    : {PORT_SCAN_WINDOW} seconds")
+    print(f"Saving packets to: {PCAP_FILE}")
 
-print("\nStarting packet capture...")
-print("Press CTRL+C to stop.")
+    print("\nDetection Rules:")
+
+    print(
+        f"  Port Scan : "
+        f"{PORT_SCAN_THRESHOLD}+ unique ports / "
+        f"{PORT_SCAN_WINDOW}s"
+    )
+
+    print(
+        f"  SYN Flood : "
+        f"{SYN_FLOOD_THRESHOLD}+ SYNs / "
+        f"{SYN_FLOOD_WINDOW}s"
+    )
+
+    print("\nStarting packet capture...")
+    print("Press CTRL+C to stop.")
+
+    captured_packets = []
+
+    try:
+
+        captured_packets = sniff(
+            iface=["eth0", "lo"],
+            prn=show_packet
+        )
+
+    finally:
+
+        if captured_packets:
+
+            wrpcap(
+                PCAP_FILE,
+                captured_packets
+            )
+
+            print(
+                f"\nPCAP saved to: "
+                f"{PCAP_FILE}"
+            )
+
+        show_statistics()
+
+        print("\nCapture stopped.")
 
 
-# ==========================================
-# PACKET CAPTURE
-# ==========================================
+if __name__ == "__main__":
 
-captured_packets = []
+    main()
 
-try:
-
-    captured_packets = sniff(
-        iface=["eth0","lo"],
-        prn=show_packet
-)
-
-finally:
-
-    if captured_packets:
-
-        wrpcap(PCAP_FILE, captured_packets)
-
-        print(f"\nPCAP saved to: {PCAP_FILE}")
-
-    show_statistics()
-
-    print("\nCapture stopped.")
