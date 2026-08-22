@@ -1,0 +1,27 @@
+{
+    "capture": {
+        "pcap_file": "captures/traffic.pcap",
+        "interfaces": [
+            "eth0",
+            "lo"
+        ]
+    },
+
+    "port_scan": {
+        "threshold": 10,
+        "window_seconds": 10
+    },
+
+    "syn_flood": {
+        "threshold": 50,
+        "window_seconds": 5,
+        "max_ports": 3,
+        "syn_ack_response_ratio": 0.20
+    },
+
+    "dns_detection": {
+        "query_threshold": 20,
+        "window_seconds": 10,
+        "max_domain_length": 100
+    }
+}
