@@ -13,6 +13,8 @@ from scapy.all import (
     DNSQR
 )
 
+from src.dns_detector import analyze_dns_query
+
 
 # ==========================================
 # CONFIGURATION
@@ -28,8 +30,6 @@ PORT_SCAN_WINDOW = 10
 SYN_FLOOD_THRESHOLD = 50
 SYN_FLOOD_WINDOW = 5
 SYN_FLOOD_MAX_PORTS = 3
-
-# Maximum acceptable SYN-ACK response ratio
 SYN_ACK_RESPONSE_RATIO = 0.20
 
 
@@ -84,17 +84,8 @@ port_scan_alerted = set()
 # SYN FLOOD TRACKING
 # ==========================================
 
-# Stores SYN attempts:
-# (source IP, destination IP) -> [(timestamp, destination_port)]
-
 syn_tracker = {}
-
-# Stores SYN-ACK responses:
-# (source IP, destination IP) -> [timestamps]
-
 syn_ack_tracker = {}
-
-# Prevent repeated alerts
 syn_flood_alerted = set()
 
 
@@ -149,24 +140,16 @@ def detect_port_scan(packet):
         )
     )
 
-    # Remove packets older than detection window
-    recent_packets = []
-
-    for packet_time, dst_ip, dst_port in port_scan_tracker[source_ip]:
-
-        if current_time - packet_time <= PORT_SCAN_WINDOW:
-
-            recent_packets.append(
-                (
-                    packet_time,
-                    dst_ip,
-                    dst_port
-                )
-            )
+    # Remove old entries
+    recent_packets = [
+        entry
+        for entry in port_scan_tracker[source_ip]
+        if current_time - entry[0] <= PORT_SCAN_WINDOW
+    ]
 
     port_scan_tracker[source_ip] = recent_packets
 
-    # Group ports by target
+    # Group ports by destination
     targets = {}
 
     for packet_time, dst_ip, dst_port in recent_packets:
@@ -176,7 +159,7 @@ def detect_port_scan(packet):
 
         targets[dst_ip].add(dst_port)
 
-    # Check every target
+    # Detect scan
     for target_ip, unique_ports in targets.items():
 
         if len(unique_ports) >= PORT_SCAN_THRESHOLD:
@@ -199,26 +182,21 @@ def detect_port_scan(packet):
             print("!" * 70)
 
             print("Possible TCP Port Scan Detected")
-
             print(f"Source IP        : {source_ip}")
             print(f"Target IP        : {target_ip}")
             print(f"Ports Scanned    : {len(unique_ports)}")
-
             print(
                 f"Destination Ports: "
                 f"{sorted(unique_ports)}"
             )
-
             print(
                 f"Detection Window : "
                 f"{PORT_SCAN_WINDOW} seconds"
             )
-
             print(
                 f"Threshold        : "
                 f"{PORT_SCAN_THRESHOLD} ports"
             )
-
             print("Severity         : HIGH")
 
             print("!" * 70)
@@ -239,7 +217,6 @@ def detect_syn_flood(packet):
     source_ip = packet[IP].src
     destination_ip = packet[IP].dst
 
-    source_port = packet[TCP].sport
     destination_port = packet[TCP].dport
 
     current_time = time.time()
@@ -247,9 +224,9 @@ def detect_syn_flood(packet):
     is_syn = bool(tcp_flags & 0x02)
     is_ack = bool(tcp_flags & 0x10)
 
-    # ======================================
-    # TRACK SYN-ACK RESPONSES
-    # ======================================
+    # --------------------------------------
+    # SYN-ACK RESPONSE
+    # --------------------------------------
 
     if is_syn and is_ack:
 
@@ -265,18 +242,18 @@ def detect_syn_flood(packet):
             current_time
         )
 
-        # Keep only recent responses
         syn_ack_tracker[response_key] = [
             response_time
-            for response_time in syn_ack_tracker[response_key]
+            for response_time
+            in syn_ack_tracker[response_key]
             if current_time - response_time <= SYN_FLOOD_WINDOW
         ]
 
         return
 
-    # ======================================
-    # TRACK PURE SYN PACKETS
-    # ======================================
+    # --------------------------------------
+    # PURE SYN
+    # --------------------------------------
 
     if not is_syn or is_ack:
         return
@@ -287,7 +264,6 @@ def detect_syn_flood(packet):
     )
 
     if connection_key not in syn_tracker:
-
         syn_tracker[connection_key] = []
 
     syn_tracker[connection_key].append(
@@ -297,30 +273,20 @@ def detect_syn_flood(packet):
         )
     )
 
-    # ======================================
-    # REMOVE OLD SYN ENTRIES
-    # ======================================
-
+    # Remove old SYNs
     syn_tracker[connection_key] = [
-
-        (
-            packet_time,
-            dst_port
-        )
-
-        for packet_time, dst_port
-        in syn_tracker[connection_key]
-
-        if current_time - packet_time <= SYN_FLOOD_WINDOW
+        entry
+        for entry in syn_tracker[connection_key]
+        if current_time - entry[0] <= SYN_FLOOD_WINDOW
     ]
 
     recent_syns = syn_tracker[connection_key]
 
     syn_count = len(recent_syns)
 
-    # ======================================
-    # GET RECENT SYN-ACK RESPONSES
-    # ======================================
+    # --------------------------------------
+    # SYN-ACK RESPONSES
+    # --------------------------------------
 
     response_key = (
         source_ip,
@@ -333,12 +299,9 @@ def detect_syn_flood(packet):
     )
 
     recent_syn_acks = [
-
         response_time
-
         for response_time
         in recent_syn_acks
-
         if current_time - response_time <= SYN_FLOOD_WINDOW
     ]
 
@@ -346,33 +309,29 @@ def detect_syn_flood(packet):
 
     syn_ack_count = len(recent_syn_acks)
 
-    # ======================================
-    # COUNT UNIQUE DESTINATION PORTS
-    # ======================================
+    # --------------------------------------
+    # UNIQUE PORTS
+    # --------------------------------------
 
-    unique_ports = set()
+    unique_ports = {
+        dst_port
+        for packet_time, dst_port
+        in recent_syns
+    }
 
-    for packet_time, dst_port in recent_syns:
-
-        unique_ports.add(dst_port)
-
-    # ======================================
+    # --------------------------------------
     # RESPONSE RATIO
-    # ======================================
+    # --------------------------------------
 
-    if syn_count > 0:
+    response_ratio = (
+        syn_ack_count / syn_count
+        if syn_count > 0
+        else 0
+    )
 
-        response_ratio = (
-            syn_ack_count / syn_count
-        )
-
-    else:
-
-        response_ratio = 0
-
-    # ======================================
-    # SYN FLOOD DETECTION
-    # ======================================
+    # --------------------------------------
+    # DETECTION
+    # --------------------------------------
 
     if (
         syn_count >= SYN_FLOOD_THRESHOLD
@@ -398,45 +357,27 @@ def detect_syn_flood(packet):
         print("!" * 70)
 
         print("Possible TCP SYN Flood Detected")
-
         print(f"Source IP        : {source_ip}")
         print(f"Target IP        : {destination_ip}")
-
-        print(
-            f"SYN Attempts     : "
-            f"{syn_count}"
-        )
-
-        print(
-            f"SYN-ACK Responses: "
-            f"{syn_ack_count}"
-        )
-
-        print(
-            f"Response Ratio   : "
-            f"{response_ratio:.2%}"
-        )
-
+        print(f"SYN Attempts     : {syn_count}")
+        print(f"SYN-ACK Responses: {syn_ack_count}")
+        print(f"Response Ratio   : {response_ratio:.2%}")
         print(
             f"Unique Ports     : "
             f"{sorted(unique_ports)}"
         )
-
         print(
             f"Detection Window : "
             f"{SYN_FLOOD_WINDOW} seconds"
         )
-
         print(
             f"SYN Threshold    : "
             f"{SYN_FLOOD_THRESHOLD}"
         )
-
         print(
             f"Response Limit   : "
             f"{SYN_ACK_RESPONSE_RATIO:.0%}"
         )
-
         print("Severity         : HIGH")
 
         print("!" * 70)
@@ -444,7 +385,7 @@ def detect_syn_flood(packet):
 
 
 # ==========================================
-# DNS ANALYSIS
+# DNS ANALYSIS + ANOMALY DETECTION
 # ==========================================
 
 def analyze_dns(packet):
@@ -452,32 +393,37 @@ def analyze_dns(packet):
     if DNS not in packet:
         return
 
-    stats["DNS"] += 1
-
     dns_layer = packet[DNS]
 
-    # DNS query
-    if dns_layer.qr == 0 and DNSQR in packet:
+    # Only process DNS queries
+    if dns_layer.qr != 0:
+        return
 
-        query = packet[DNSQR].qname
+    if DNSQR not in packet:
+        return
 
-        if isinstance(query, bytes):
-            query = query.decode(
-                errors="ignore"
-            )
+    query = packet[DNSQR].qname
 
-        print(
-            f"DNS Query        : "
-            f"{query}"
+    if isinstance(query, bytes):
+        query = query.decode(
+            errors="ignore"
         )
 
-    # DNS response
-    elif dns_layer.qr == 1:
+    source_ip = packet[IP].src
 
-        print(
-            "DNS Message      : "
-            "Response"
-        )
+    print(
+        f"DNS Query        : "
+        f"{query}"
+    )
+
+    # Run DNS anomaly detector
+    alerts = analyze_dns_query(
+        source_ip=source_ip,
+        domain=query
+    )
+
+    stats["DNS"] += 1
+    stats["Alerts"] += alerts
 
 
 # ==========================================
@@ -506,9 +452,9 @@ def show_packet(packet):
         f"{packet_size} bytes"
     )
 
-    # ======================================
-    # IP PACKETS
-    # ======================================
+    # --------------------------------------
+    # IP
+    # --------------------------------------
 
     if IP in packet:
 
@@ -525,9 +471,9 @@ def show_packet(packet):
             f"{destination}"
         )
 
-        # ==================================
+        # ----------------------------------
         # TCP
-        # ==================================
+        # ----------------------------------
 
         if TCP in packet:
 
@@ -558,13 +504,12 @@ def show_packet(packet):
                 f"{service}"
             )
 
-            # Security detections
             detect_port_scan(packet)
             detect_syn_flood(packet)
 
-        # ==================================
+        # ----------------------------------
         # UDP
-        # ==================================
+        # ----------------------------------
 
         elif UDP in packet:
 
@@ -596,12 +541,11 @@ def show_packet(packet):
             )
 
             if DNS in packet:
-
                 analyze_dns(packet)
 
-        # ==================================
+        # ----------------------------------
         # ICMP
-        # ==================================
+        # ----------------------------------
 
         elif ICMP in packet:
 
@@ -612,9 +556,9 @@ def show_packet(packet):
                 "ICMP"
             )
 
-        # ==================================
+        # ----------------------------------
         # OTHER IP
-        # ==================================
+        # ----------------------------------
 
         else:
 
@@ -625,9 +569,9 @@ def show_packet(packet):
                 "Other"
             )
 
-    # ======================================
+    # --------------------------------------
     # ARP
-    # ======================================
+    # --------------------------------------
 
     elif ARP in packet:
 
@@ -650,20 +594,17 @@ def show_packet(packet):
 
 
 # ==========================================
-# TRAFFIC STATISTICS
+# STATISTICS
 # ==========================================
 
 def show_statistics():
 
     print("\n")
-
     print("=" * 70)
-
     print(
         "                 "
         "NETWORK TRAFFIC STATISTICS"
     )
-
     print("=" * 70)
 
     print(
@@ -697,7 +638,7 @@ def show_statistics():
     )
 
     print(
-        f"DNS Messages     : "
+        f"DNS Queries      : "
         f"{stats['DNS']}"
     )
 
@@ -710,7 +651,7 @@ def show_statistics():
 
 
 # ==========================================
-# MAIN PROGRAM
+# MAIN
 # ==========================================
 
 def main():
@@ -748,7 +689,9 @@ def main():
         f"{SYN_ACK_RESPONSE_RATIO:.0%}"
     )
 
-    print("\nStarting packet capture...")
+    print(
+        "\nStarting packet capture..."
+    )
 
     print(
         "Press CTRL+C to stop."
@@ -787,5 +730,4 @@ def main():
 # ==========================================
 
 if __name__ == "__main__":
-
     main()
