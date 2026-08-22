@@ -29,6 +29,9 @@ SYN_FLOOD_THRESHOLD = 50
 SYN_FLOOD_WINDOW = 5
 SYN_FLOOD_MAX_PORTS = 3
 
+# Maximum acceptable SYN-ACK response ratio
+SYN_ACK_RESPONSE_RATIO = 0.20
+
 
 # ==========================================
 # SERVICE / PORT MAPPING
@@ -81,7 +84,17 @@ port_scan_alerted = set()
 # SYN FLOOD TRACKING
 # ==========================================
 
+# Stores SYN attempts:
+# (source IP, destination IP) -> [(timestamp, destination_port)]
+
 syn_tracker = {}
+
+# Stores SYN-ACK responses:
+# (source IP, destination IP) -> [timestamps]
+
+syn_ack_tracker = {}
+
+# Prevent repeated alerts
 syn_flood_alerted = set()
 
 
@@ -129,9 +142,14 @@ def detect_port_scan(packet):
         port_scan_tracker[source_ip] = []
 
     port_scan_tracker[source_ip].append(
-        (current_time, destination_ip, destination_port)
+        (
+            current_time,
+            destination_ip,
+            destination_port
+        )
     )
 
+    # Remove packets older than detection window
     recent_packets = []
 
     for packet_time, dst_ip, dst_port in port_scan_tracker[source_ip]:
@@ -139,25 +157,37 @@ def detect_port_scan(packet):
         if current_time - packet_time <= PORT_SCAN_WINDOW:
 
             recent_packets.append(
-                (packet_time, dst_ip, dst_port)
+                (
+                    packet_time,
+                    dst_ip,
+                    dst_port
+                )
             )
 
     port_scan_tracker[source_ip] = recent_packets
 
-    unique_ports = set()
+    # Group ports by target
+    targets = {}
 
     for packet_time, dst_ip, dst_port in recent_packets:
 
-        unique_ports.add(dst_port)
+        if dst_ip not in targets:
+            targets[dst_ip] = set()
 
-    if len(unique_ports) >= PORT_SCAN_THRESHOLD:
+        targets[dst_ip].add(dst_port)
 
-        alert_key = (
-            source_ip,
-            destination_ip
-        )
+    # Check every target
+    for target_ip, unique_ports in targets.items():
 
-        if alert_key not in port_scan_alerted:
+        if len(unique_ports) >= PORT_SCAN_THRESHOLD:
+
+            alert_key = (
+                source_ip,
+                target_ip
+            )
+
+            if alert_key in port_scan_alerted:
+                continue
 
             port_scan_alerted.add(alert_key)
 
@@ -171,7 +201,7 @@ def detect_port_scan(packet):
             print("Possible TCP Port Scan Detected")
 
             print(f"Source IP        : {source_ip}")
-            print(f"Target IP        : {destination_ip}")
+            print(f"Target IP        : {target_ip}")
             print(f"Ports Scanned    : {len(unique_ports)}")
 
             print(
@@ -214,68 +244,111 @@ def detect_syn_flood(packet):
 
     current_time = time.time()
 
-    # --------------------------------------
-    # SYN PACKET
-    # --------------------------------------
-
     is_syn = bool(tcp_flags & 0x02)
     is_ack = bool(tcp_flags & 0x10)
 
-    # Pure SYN: SYN=1, ACK=0
-    if is_syn and not is_ack:
+    # ======================================
+    # TRACK SYN-ACK RESPONSES
+    # ======================================
 
-        connection_key = (
-            source_ip,
-            destination_ip
+    if is_syn and is_ack:
+
+        response_key = (
+            destination_ip,
+            source_ip
         )
 
-        if connection_key not in syn_tracker:
+        if response_key not in syn_ack_tracker:
+            syn_ack_tracker[response_key] = []
 
-            syn_tracker[connection_key] = []
-
-        syn_tracker[connection_key].append(
-            (
-                current_time,
-                destination_port
-            )
+        syn_ack_tracker[response_key].append(
+            current_time
         )
 
-    # --------------------------------------
-    # REMOVE OLD SYN ENTRIES
-    # --------------------------------------
+        # Keep only recent responses
+        syn_ack_tracker[response_key] = [
+            response_time
+            for response_time in syn_ack_tracker[response_key]
+            if current_time - response_time <= SYN_FLOOD_WINDOW
+        ]
+
+        return
+
+    # ======================================
+    # TRACK PURE SYN PACKETS
+    # ======================================
+
+    if not is_syn or is_ack:
+        return
 
     connection_key = (
         source_ip,
         destination_ip
     )
 
-    if connection_key in syn_tracker:
-
-        recent_syns = []
-
-        for packet_time, dst_port in syn_tracker[connection_key]:
-
-            if current_time - packet_time <= SYN_FLOOD_WINDOW:
-
-                recent_syns.append(
-                    (
-                        packet_time,
-                        dst_port
-                    )
-                )
-
-        syn_tracker[connection_key] = recent_syns
-
-    # --------------------------------------
-    # CHECK FOR POSSIBLE SYN FLOOD
-    # --------------------------------------
-
     if connection_key not in syn_tracker:
-        return
+
+        syn_tracker[connection_key] = []
+
+    syn_tracker[connection_key].append(
+        (
+            current_time,
+            destination_port
+        )
+    )
+
+    # ======================================
+    # REMOVE OLD SYN ENTRIES
+    # ======================================
+
+    syn_tracker[connection_key] = [
+
+        (
+            packet_time,
+            dst_port
+        )
+
+        for packet_time, dst_port
+        in syn_tracker[connection_key]
+
+        if current_time - packet_time <= SYN_FLOOD_WINDOW
+    ]
 
     recent_syns = syn_tracker[connection_key]
 
     syn_count = len(recent_syns)
+
+    # ======================================
+    # GET RECENT SYN-ACK RESPONSES
+    # ======================================
+
+    response_key = (
+        source_ip,
+        destination_ip
+    )
+
+    recent_syn_acks = syn_ack_tracker.get(
+        response_key,
+        []
+    )
+
+    recent_syn_acks = [
+
+        response_time
+
+        for response_time
+        in recent_syn_acks
+
+        if current_time - response_time <= SYN_FLOOD_WINDOW
+    ]
+
+    syn_ack_tracker[response_key] = recent_syn_acks
+
+    syn_ack_count = len(recent_syn_acks)
+
+    # ======================================
+    # COUNT UNIQUE DESTINATION PORTS
+    # ======================================
 
     unique_ports = set()
 
@@ -283,50 +356,91 @@ def detect_syn_flood(packet):
 
         unique_ports.add(dst_port)
 
-    # A flood-like pattern should generally
-    # concentrate on a small number of ports.
+    # ======================================
+    # RESPONSE RATIO
+    # ======================================
+
+    if syn_count > 0:
+
+        response_ratio = (
+            syn_ack_count / syn_count
+        )
+
+    else:
+
+        response_ratio = 0
+
+    # ======================================
+    # SYN FLOOD DETECTION
+    # ======================================
 
     if (
         syn_count >= SYN_FLOOD_THRESHOLD
         and len(unique_ports) <= SYN_FLOOD_MAX_PORTS
+        and response_ratio <= SYN_ACK_RESPONSE_RATIO
     ):
 
-        if connection_key not in syn_flood_alerted:
+        alert_key = (
+            source_ip,
+            destination_ip
+        )
 
-            syn_flood_alerted.add(connection_key)
+        if alert_key in syn_flood_alerted:
+            return
 
-            stats["Alerts"] += 1
+        syn_flood_alerted.add(alert_key)
 
-            print("\n")
-            print("!" * 70)
-            print("              🚨 SECURITY ALERT 🚨")
-            print("!" * 70)
+        stats["Alerts"] += 1
 
-            print("Possible TCP SYN Flood Detected")
+        print("\n")
+        print("!" * 70)
+        print("              🚨 SECURITY ALERT 🚨")
+        print("!" * 70)
 
-            print(f"Source IP        : {source_ip}")
-            print(f"Target IP        : {destination_ip}")
-            print(f"SYN Attempts     : {syn_count}")
+        print("Possible TCP SYN Flood Detected")
 
-            print(
-                f"Unique Ports     : "
-                f"{sorted(unique_ports)}"
-            )
+        print(f"Source IP        : {source_ip}")
+        print(f"Target IP        : {destination_ip}")
 
-            print(
-                f"Detection Window : "
-                f"{SYN_FLOOD_WINDOW} seconds"
-            )
+        print(
+            f"SYN Attempts     : "
+            f"{syn_count}"
+        )
 
-            print(
-                f"Threshold        : "
-                f"{SYN_FLOOD_THRESHOLD} SYNs"
-            )
+        print(
+            f"SYN-ACK Responses: "
+            f"{syn_ack_count}"
+        )
 
-            print("Severity         : HIGH")
+        print(
+            f"Response Ratio   : "
+            f"{response_ratio:.2%}"
+        )
 
-            print("!" * 70)
-            print()
+        print(
+            f"Unique Ports     : "
+            f"{sorted(unique_ports)}"
+        )
+
+        print(
+            f"Detection Window : "
+            f"{SYN_FLOOD_WINDOW} seconds"
+        )
+
+        print(
+            f"SYN Threshold    : "
+            f"{SYN_FLOOD_THRESHOLD}"
+        )
+
+        print(
+            f"Response Limit   : "
+            f"{SYN_ACK_RESPONSE_RATIO:.0%}"
+        )
+
+        print("Severity         : HIGH")
+
+        print("!" * 70)
+        print()
 
 
 # ==========================================
@@ -348,14 +462,22 @@ def analyze_dns(packet):
         query = packet[DNSQR].qname
 
         if isinstance(query, bytes):
-            query = query.decode(errors="ignore")
+            query = query.decode(
+                errors="ignore"
+            )
 
-        print(f"DNS Query       : {query}")
+        print(
+            f"DNS Query        : "
+            f"{query}"
+        )
 
     # DNS response
     elif dns_layer.qr == 1:
 
-        print("DNS Message     : Response")
+        print(
+            "DNS Message      : "
+            "Response"
+        )
 
 
 # ==========================================
@@ -366,30 +488,46 @@ def show_packet(packet):
 
     stats["total"] += 1
 
-    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    timestamp = datetime.now().strftime(
+        "%H:%M:%S.%f"
+    )[:-3]
 
     packet_size = len(packet)
 
     print("\n" + "=" * 70)
 
-    print(f"Timestamp        : {timestamp}")
-    print(f"Packet Size      : {packet_size} bytes")
+    print(
+        f"Timestamp        : "
+        f"{timestamp}"
+    )
 
-    # --------------------------------------
+    print(
+        f"Packet Size      : "
+        f"{packet_size} bytes"
+    )
+
+    # ======================================
     # IP PACKETS
-    # --------------------------------------
+    # ======================================
 
     if IP in packet:
 
         source = packet[IP].src
         destination = packet[IP].dst
 
-        print(f"Source IP        : {source}")
-        print(f"Destination IP   : {destination}")
+        print(
+            f"Source IP        : "
+            f"{source}"
+        )
 
-        # ----------------------------------
+        print(
+            f"Destination IP   : "
+            f"{destination}"
+        )
+
+        # ==================================
         # TCP
-        # ----------------------------------
+        # ==================================
 
         if TCP in packet:
 
@@ -399,23 +537,34 @@ def show_packet(packet):
             destination_port = packet[TCP].dport
 
             print("Protocol         : TCP")
-            print(f"Source Port      : {source_port}")
-            print(f"Destination Port : {destination_port}")
+
+            print(
+                f"Source Port      : "
+                f"{source_port}"
+            )
+
+            print(
+                f"Destination Port : "
+                f"{destination_port}"
+            )
 
             service = get_service(
                 source_port,
                 destination_port
             )
 
-            print(f"Service          : {service}")
+            print(
+                f"Service          : "
+                f"{service}"
+            )
 
-            # Security detection
+            # Security detections
             detect_port_scan(packet)
             detect_syn_flood(packet)
 
-        # ----------------------------------
+        # ==================================
         # UDP
-        # ----------------------------------
+        # ==================================
 
         elif UDP in packet:
 
@@ -425,51 +574,79 @@ def show_packet(packet):
             destination_port = packet[UDP].dport
 
             print("Protocol         : UDP")
-            print(f"Source Port      : {source_port}")
-            print(f"Destination Port : {destination_port}")
+
+            print(
+                f"Source Port      : "
+                f"{source_port}"
+            )
+
+            print(
+                f"Destination Port : "
+                f"{destination_port}"
+            )
 
             service = get_service(
                 source_port,
                 destination_port
             )
 
-            print(f"Service          : {service}")
+            print(
+                f"Service          : "
+                f"{service}"
+            )
 
             if DNS in packet:
 
                 analyze_dns(packet)
 
-        # ----------------------------------
+        # ==================================
         # ICMP
-        # ----------------------------------
+        # ==================================
 
         elif ICMP in packet:
 
             stats["ICMP"] += 1
 
-            print("Protocol         : ICMP")
+            print(
+                "Protocol         : "
+                "ICMP"
+            )
 
-        # ----------------------------------
+        # ==================================
         # OTHER IP
-        # ----------------------------------
+        # ==================================
 
         else:
 
             stats["Other"] += 1
 
-            print("Protocol         : Other")
+            print(
+                "Protocol         : "
+                "Other"
+            )
 
-    # --------------------------------------
+    # ======================================
     # ARP
-    # --------------------------------------
+    # ======================================
 
     elif ARP in packet:
 
         stats["ARP"] += 1
 
-        print("Protocol         : ARP")
-        print(f"Source IP        : {packet[ARP].psrc}")
-        print(f"Destination IP   : {packet[ARP].pdst}")
+        print(
+            "Protocol         : "
+            "ARP"
+        )
+
+        print(
+            f"Source IP        : "
+            f"{packet[ARP].psrc}"
+        )
+
+        print(
+            f"Destination IP   : "
+            f"{packet[ARP].pdst}"
+        )
 
 
 # ==========================================
@@ -479,33 +656,78 @@ def show_packet(packet):
 def show_statistics():
 
     print("\n")
-    print("=" * 70)
-    print("                 NETWORK TRAFFIC STATISTICS")
+
     print("=" * 70)
 
-    print(f"Total Packets    : {stats['total']}")
-    print(f"TCP Packets      : {stats['TCP']}")
-    print(f"UDP Packets      : {stats['UDP']}")
-    print(f"ICMP Packets     : {stats['ICMP']}")
-    print(f"ARP Packets      : {stats['ARP']}")
-    print(f"Other Packets    : {stats['Other']}")
-    print(f"DNS Messages     : {stats['DNS']}")
-    print(f"Security Alerts  : {stats['Alerts']}")
+    print(
+        "                 "
+        "NETWORK TRAFFIC STATISTICS"
+    )
+
+    print("=" * 70)
+
+    print(
+        f"Total Packets    : "
+        f"{stats['total']}"
+    )
+
+    print(
+        f"TCP Packets      : "
+        f"{stats['TCP']}"
+    )
+
+    print(
+        f"UDP Packets      : "
+        f"{stats['UDP']}"
+    )
+
+    print(
+        f"ICMP Packets     : "
+        f"{stats['ICMP']}"
+    )
+
+    print(
+        f"ARP Packets      : "
+        f"{stats['ARP']}"
+    )
+
+    print(
+        f"Other Packets    : "
+        f"{stats['Other']}"
+    )
+
+    print(
+        f"DNS Messages     : "
+        f"{stats['DNS']}"
+    )
+
+    print(
+        f"Security Alerts  : "
+        f"{stats['Alerts']}"
+    )
 
     print("=" * 70)
 
 
 # ==========================================
-# PROGRAM START
+# MAIN PROGRAM
 # ==========================================
 
 def main():
 
     print("=" * 70)
-    print("                 NETWORK TRAFFIC ANALYZER")
+
+    print(
+        "                 "
+        "NETWORK TRAFFIC ANALYZER"
+    )
+
     print("=" * 70)
 
-    print(f"Saving packets to: {PCAP_FILE}")
+    print(
+        f"Saving packets to: "
+        f"{PCAP_FILE}"
+    )
 
     print("\nDetection Rules:")
 
@@ -521,8 +743,16 @@ def main():
         f"{SYN_FLOOD_WINDOW}s"
     )
 
+    print(
+        f"  SYN-ACK Response Limit : "
+        f"{SYN_ACK_RESPONSE_RATIO:.0%}"
+    )
+
     print("\nStarting packet capture...")
-    print("Press CTRL+C to stop.")
+
+    print(
+        "Press CTRL+C to stop."
+    )
 
     captured_packets = []
 
@@ -552,7 +782,10 @@ def main():
         print("\nCapture stopped.")
 
 
+# ==========================================
+# ENTRY POINT
+# ==========================================
+
 if __name__ == "__main__":
 
     main()
-
