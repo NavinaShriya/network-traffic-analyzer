@@ -77,3 +77,9 @@ All major detection modules have been tested successfully, including:
 - Email/webhook notifications
 - Database-backed security events
 - Machine-learning-based anomaly detection
+
+## Screenshots
+
+### Live Packet Capture
+
+![Live Packet Capture](docs/screenshots/live-capture.png)
