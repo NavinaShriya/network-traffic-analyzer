@@ -83,3 +83,6 @@ All major detection modules have been tested successfully, including:
 ### Live Packet Capture
 
 ![Live Packet Capture](docs/screenshots/live-capture.png)
+### TCP SYN Flood Detection
+
+![SYN Flood Alert](docs/screenshots/syn-flood-alert.png)
