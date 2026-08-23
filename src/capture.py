@@ -13,23 +13,59 @@ from scapy.all import (
     DNSQR
 )
 
+from src.config_loader import load_config
 from src.dns_detector import analyze_dns_query
 from src.security_logger import log_security_alert
 
 
 # ==========================================
-# CONFIGURATION
+# LOAD CONFIGURATION
 # ==========================================
 
-PCAP_FILE = "captures/traffic.pcap"
+CONFIG = load_config()
 
-PORT_SCAN_THRESHOLD = 10
-PORT_SCAN_WINDOW = 10
 
-SYN_FLOOD_THRESHOLD = 50
-SYN_FLOOD_WINDOW = 5
-SYN_FLOOD_MAX_PORTS = 3
-SYN_ACK_RESPONSE_RATIO = 0.20
+# ==========================================
+# CAPTURE CONFIGURATION
+# ==========================================
+
+PCAP_FILE = CONFIG["capture"]["pcap_file"]
+
+CAPTURE_INTERFACES = CONFIG["capture"]["interfaces"]
+
+
+# ==========================================
+# PORT SCAN CONFIGURATION
+# ==========================================
+
+PORT_SCAN_THRESHOLD = (
+    CONFIG["port_scan"]["threshold"]
+)
+
+PORT_SCAN_WINDOW = (
+    CONFIG["port_scan"]["window_seconds"]
+)
+
+
+# ==========================================
+# SYN FLOOD CONFIGURATION
+# ==========================================
+
+SYN_FLOOD_THRESHOLD = (
+    CONFIG["syn_flood"]["threshold"]
+)
+
+SYN_FLOOD_WINDOW = (
+    CONFIG["syn_flood"]["window_seconds"]
+)
+
+SYN_FLOOD_MAX_PORTS = (
+    CONFIG["syn_flood"]["max_ports"]
+)
+
+SYN_ACK_RESPONSE_RATIO = (
+    CONFIG["syn_flood"]["syn_ack_response_ratio"]
+)
 
 
 # ==========================================
@@ -190,23 +226,43 @@ def detect_port_scan(packet):
             print("              🚨 SECURITY ALERT 🚨")
             print("!" * 70)
 
-            print("Possible TCP Port Scan Detected")
-            print(f"Source IP        : {source_ip}")
-            print(f"Target IP        : {target_ip}")
-            print(f"Ports Scanned    : {len(unique_ports)}")
+            print(
+                "Possible TCP Port Scan Detected"
+            )
+
+            print(
+                f"Source IP        : "
+                f"{source_ip}"
+            )
+
+            print(
+                f"Target IP        : "
+                f"{target_ip}"
+            )
+
+            print(
+                f"Ports Scanned    : "
+                f"{len(unique_ports)}"
+            )
+
             print(
                 f"Destination Ports: "
                 f"{sorted(unique_ports)}"
             )
+
             print(
                 f"Detection Window : "
                 f"{PORT_SCAN_WINDOW} seconds"
             )
+
             print(
                 f"Threshold        : "
                 f"{PORT_SCAN_THRESHOLD} ports"
             )
-            print("Severity         : HIGH")
+
+            print(
+                "Severity         : HIGH"
+            )
 
             print("!" * 70)
             print()
@@ -382,29 +438,58 @@ def detect_syn_flood(packet):
         print("              🚨 SECURITY ALERT 🚨")
         print("!" * 70)
 
-        print("Possible TCP SYN Flood Detected")
-        print(f"Source IP        : {source_ip}")
-        print(f"Target IP        : {destination_ip}")
-        print(f"SYN Attempts     : {syn_count}")
-        print(f"SYN-ACK Responses: {syn_ack_count}")
-        print(f"Response Ratio   : {response_ratio:.2%}")
+        print(
+            "Possible TCP SYN Flood Detected"
+        )
+
+        print(
+            f"Source IP        : "
+            f"{source_ip}"
+        )
+
+        print(
+            f"Target IP        : "
+            f"{destination_ip}"
+        )
+
+        print(
+            f"SYN Attempts     : "
+            f"{syn_count}"
+        )
+
+        print(
+            f"SYN-ACK Responses: "
+            f"{syn_ack_count}"
+        )
+
+        print(
+            f"Response Ratio   : "
+            f"{response_ratio:.2%}"
+        )
+
         print(
             f"Unique Ports     : "
             f"{sorted(unique_ports)}"
         )
+
         print(
             f"Detection Window : "
             f"{SYN_FLOOD_WINDOW} seconds"
         )
+
         print(
             f"SYN Threshold    : "
             f"{SYN_FLOOD_THRESHOLD}"
         )
+
         print(
             f"Response Limit   : "
             f"{SYN_ACK_RESPONSE_RATIO:.0%}"
         )
-        print("Severity         : HIGH")
+
+        print(
+            "Severity         : HIGH"
+        )
 
         print("!" * 70)
         print()
@@ -672,22 +757,32 @@ def main():
         f"{PCAP_FILE}"
     )
 
-    print("\nDetection Rules:")
+    print("\nConfiguration loaded:")
 
     print(
-        f"  Port Scan : "
-        f"{PORT_SCAN_THRESHOLD}+ unique ports / "
+        f"  Interfaces      : "
+        f"{CAPTURE_INTERFACES}"
+    )
+
+    print(
+        f"  Port Scan       : "
+        f"{PORT_SCAN_THRESHOLD} ports / "
         f"{PORT_SCAN_WINDOW}s"
     )
 
     print(
-        f"  SYN Flood : "
-        f"{SYN_FLOOD_THRESHOLD}+ SYNs / "
+        f"  SYN Flood       : "
+        f"{SYN_FLOOD_THRESHOLD} SYNs / "
         f"{SYN_FLOOD_WINDOW}s"
     )
 
     print(
-        f"  SYN-ACK Response Limit : "
+        f"  Max SYN Ports   : "
+        f"{SYN_FLOOD_MAX_PORTS}"
+    )
+
+    print(
+        f"  SYN-ACK Limit   : "
         f"{SYN_ACK_RESPONSE_RATIO:.0%}"
     )
 
@@ -704,7 +799,7 @@ def main():
     try:
 
         captured_packets = sniff(
-            iface=["eth0", "lo"],
+            iface=CAPTURE_INTERFACES,
             prn=show_packet
         )
 
