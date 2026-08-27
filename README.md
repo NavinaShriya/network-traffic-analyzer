@@ -72,7 +72,6 @@ All major detection modules have been tested successfully, including:
 ## Future Improvements
 
 - Real-time monitoring dashboard
-- Additional attack detection modules
 - IP reputation integration
 - Email/webhook notifications
 - Database-backed security events
